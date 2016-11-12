@@ -5,7 +5,6 @@ import (
 	"math"
 	"os"
 	"strings"
-	"errors"
 )
 
 type Dir int
@@ -139,7 +138,8 @@ func (f *field) getFewestMarkDirNotExceedingAlarmRound(previousDir Dir, alarmRou
 	return minDir
 }
 
-func (f *field) getLowestDistanceDir(previousDir Dir) Dir {
+// Look by adjacent fields not path distance(!)
+func (f *field) getLowestDistanceDir(r *runner, previousDir Dir) Dir {
 	lowestDist := math.MaxInt32
 	minDir := previousDir.Opposite()
 	for _, dir := range f.availableDirsOrder {
@@ -147,14 +147,14 @@ func (f *field) getLowestDistanceDir(previousDir Dir) Dir {
 			continue
 		}
 
-		path := f.availableDirs[dir]
-		pathMinDist := math.MaxInt32
-		if path != nil {
-			pathMinDist = path.distance
+		adjacentField := r.whatIsIn(r.kirkPos, dir, 1)
+		minDist := math.MaxInt32
+		if adjacentField != nil {
+			minDist = adjacentField.minDist
 		}
 
-		if pathMinDist < lowestDist {
-			lowestDist = pathMinDist
+		if minDist < lowestDist {
+			lowestDist = minDist
 			minDir = dir
 		}
 	}
@@ -196,39 +196,6 @@ type edge struct {
 func newEdge() *edge {
 	return &edge{
 		controlRoomDistance: math.MaxInt32,
-	}
-}
-
-func (e *edge) DistInField(currentField *field) int {
-	dist, ok := edge.abDistance[currentField]
-	if ok {
-		return dist
-	}
-
-	dist, err := e.DistInOppField(currentField)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "SHOULD NOT HAPPEN")
-	}
-
-	return dist + e.localDistance
-
-}
-
-// if not -> err.
-func (e *edge) DistInOppField(currentField *field) (int, error) {
-	// Find opposite distance.
-	for f, dist := range edge.abDistance {
-		if f == currentField {
-			continue
-		}
-		return dist, nil
-	}
-	return 0, errors.New("NotFound")
-}
-
-func (e *edge) SetEdgeEnd(currentField *field) {
-	if _, ok := e.abDistance[currentField]; !ok {
-		e.abDistance[currentField] = e.localDistance
 	}
 }
 
@@ -297,18 +264,20 @@ func (r *runner) touchAlarm() {
 		previousDir := NONE
 		distance := 0
 		if currentPath != nil {
+			currentPath.distance++
 			currentPath.localDistance++
+			distance = currentPath.distance
 			previousDir = currentPath.previousDir
+		}
 
-			if currentField.isJunction {
-				currentPath.SetEdgeEnd(currentField)
-			}
+		if distance < currentField.minDist {
+			currentField.minDist = distance
 		}
 
 		if controlRoomDir != NONE {
 			// We could go there and set alarm, but let's check if we have enough way home.
 			// NOTE: It won't happen in newest algo.
-			if currentPath == nil || currentPath.DistInField(currentField) <= r.alarmRounds {
+			if distance <= r.alarmRounds {
 				// We are ok! Let's set alarm and let's go back.
 				if currentPath == nil {
 					currentPath = newEdge()
@@ -324,7 +293,7 @@ func (r *runner) touchAlarm() {
 		}
 
 		dir := NONE
-		if currentPath != nil && currentPath.DistInField(currentField) >= r.alarmRounds {
+		if distance >= r.alarmRounds {
 			// Stop searching - not worth it.
 			fmt.Fprintln(os.Stderr, "Putting artifical wall! Distance is too long.")
 			dir = currentField.getFewestMarkDirNotExceedingAlarmRound(previousDir, r.alarmRounds)
@@ -334,11 +303,12 @@ func (r *runner) touchAlarm() {
 		}
 
 		fmt.Fprintln(os.Stderr,
-			fmt.Sprintf("Dirs found: %v. Field was already processed? %v. \nDir chosen: %v. Prev dir: %v. Curr path: %+v",
-				currentField.availableDirs, isAlreadyMarked, dir, previousDir, currentPath))
+			fmt.Sprintf("Dirs found: %v. Field was already processed? %v. \nL: %v Dir chosen: %v. Prev dir: %v. Curr path: %+v",
+				currentField.minDist, currentField.availableDirs, isAlreadyMarked, dir, previousDir, currentPath))
 
 		if currentField.isJunction {
 			// It's junction, so  we need to increase the mark and create a new path if it's nil.
+			// Part of Trémaux's algo (walking back if mark == 1 and junction is marked)
 			if currentPath != nil {
 				if isAlreadyMarked && currentPath.marks == 1 &&
 					currentField.availableDirs[currentPath.previousDir.Opposite()] == nil {
@@ -357,40 +327,9 @@ func (r *runner) touchAlarm() {
 
 			if currentField.availableDirs[dir] == nil {
 				currentField.availableDirs[dir] = newEdge()
-				currentField.availableDirs[dir].distance = math.MaxInt32 // !
 			}
 
-			if currentPath != nil && currentPath.controlRoomDistance != math.MaxInt32 {
-				// Set control room distance if trackable already.
-				lowestCtrlDistDir := currentField.getLowestDistanceControlDir(NONE)
-				lowestCtrlDist := 0
-				if lowestCtrlDistDir != NONE {
-					lowestCtrlDist = currentField.availableDirs[lowestCtrlDistDir].controlRoomDistance
-				}
-				if lowestCtrlDistDir == currentPath.previousDir.Opposite() {
-					lowestCtrlDist += currentPath.localDistance
-				}
-
-				if currentPath.distance + lowestCtrlDist <= r.alarmRounds {
-					// We are good to follow the best ctrl path and return!
-					dir = r.returnToControlRoom()
-					currentPath = currentField.availableDirs[dir]
-					currentPath.previousDir = dir
-					continue
-				}
-
-				currentField.availableDirs[dir].controlRoomDistance = lowestCtrlDist
-				fmt.Fprintln(os.Stderr, fmt.Sprintf("Control room update %v", lowestCtrlDist))
-				// Check if we are close enough to home.
-			}
-
-			lowestDistDir := currentField.getLowestDistanceDir(NONE)
-			lowestDist := 0
-			if lowestDistDir != NONE && !currentField.isStartPoint {
-				lowestDist = currentField.availableDirs[lowestDistDir].distance
-			}
-
-			currentField.availableDirs[dir].distance = lowestDist
+			currentField.availableDirs[dir].distance = distance
 			currentField.availableDirs[dir].localDistance = 0
 		} else {
 			if currentPath == nil {
@@ -450,15 +389,15 @@ func (r *runner) setAlarmAndGoBack(controllerRoomDir Dir) {
 
 	currentField := r.maze[r.kirkPos.x][r.kirkPos.y]
 
-	if !currentField.isProccessed {
-		_ = r.processField(currentField)
+	if len(currentField.availableDirs) ==0 {
+		_ = r.processAvailablePaths(currentField)
 	}
 
 	previousDir := controllerRoomDir
 	for {
 		currentField = r.maze[r.kirkPos.x][r.kirkPos.y]
 
-		dir := currentField.getLowestDistanceDir(previousDir)
+		dir := currentField.getLowestDistanceDir(r, previousDir)
 
 		fmt.Fprintln(os.Stderr,
 			fmt.Sprintf("Dirs found: %v\nDir chosen: %v. Prev dir: %v",
@@ -546,23 +485,3 @@ func main() {
 	fmt.Scan(&r.rows, &r.cols, &r.alarmRounds)
 	r.run()
 }
-
-//nextMove := RIGHT
-// if r.controlRoomPos != nil {
-//    xDiff := r.controlRoomPos.x - r.kirkPos.x
-//    yDiff := r.controlRoomPos.y - r.kirkPos.y
-//
-//    if xDiff > yDiff {
-//       if xDiff > 0 {
-//          nextMove = DOWN
-//       } else {
-//          nextMove = UP
-//       }
-//    } else {
-//       if yDiff > 0 {
-//          nextMove = RIGHT
-//       } else {
-//          nextMove = LEFT
-//       }
-//    }
-//}
