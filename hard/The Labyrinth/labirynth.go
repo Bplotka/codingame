@@ -85,7 +85,7 @@ func newField() *field {
 }
 
 // For not visited path -> mark = 0.
-func (f *field) getFewestMarkDir(previousDir Dir) Dir {
+func (f *field) getFewestMarkDir(r *runner, previousDir Dir) Dir {
 	if len(f.availableDirsOrder) == 1 {
 		return f.availableDirsOrder[0]
 	}
@@ -97,6 +97,15 @@ func (f *field) getFewestMarkDir(previousDir Dir) Dir {
 			continue
 		}
 		path := f.availableDirs[dir]
+
+		// Check if it was already blocked artificially.
+		adjacentField := r.whatIsIn(r.kirkPos, dir, 1)
+		if adjacentField != nil {
+			if adjacentField.minDist != math.MaxInt32 && adjacentField.minDist >= r.alarmRounds {
+				continue
+			}
+		}
+
 		pathMinMark := 0
 		if path != nil {
 			pathMinMark = path.marks
@@ -111,7 +120,7 @@ func (f *field) getFewestMarkDir(previousDir Dir) Dir {
 	return minDir
 }
 
-// For not visited path, we are assuming it
+// For not visited path, we are assuming it is exceeding.
 func (f *field) getFewestMarkDirNotExceedingAlarmRound(previousDir Dir, alarmRounds int) Dir {
 	if len(f.availableDirsOrder) == 1 {
 		return f.availableDirsOrder[0]
@@ -211,6 +220,30 @@ type runner struct {
 	kirkPos        pos
 }
 
+// Author: witcher92
+// Inspired by Trémaux's algorithm, but with some extensions.
+//
+// Algo:
+//    x---path-(marks: X)--x
+//  field  -  field  -  field
+// (junction)		  (junction)
+// 	  |				  |
+//	field				field
+//
+//  1. Start with random direction (dir)
+// 	When junction is spotted:
+// 	1. If spotted already visited junction, and your actual path == 1, walk back (and mark path)
+//  2. If it is not the case, choose path with the lowest mark (except yours) and mark your path.
+// 	3. If you found a dead end (your end field == start field) mark your path
+//
+// Above algo works perfectly find -> at the ends it always finds the control room. But not always finds the shortest path
+// so extensions are needed:
+//
+//	4. If the field's absolute distance from start point >= alarm round it is not worth to go there so find the lowest
+//  mark, excluding no marks and paths with exceeding alarm.
+//
+//
+
 func (r *runner) run() {
 	// First iteration grabs the starting point.
 	fmt.Scan(&r.kirkPos.x, &r.kirkPos.y)
@@ -237,7 +270,6 @@ func (r* runner) charToMazeField(i, j int, char string) {
 
 	if char == "." {
 		r.maze[i][j] = newField()
-		r.maze[i][j].isControlRoom = true
 		return
 	}
 
@@ -272,6 +304,8 @@ func (r *runner) touchAlarm() {
 
 		if distance < currentField.minDist {
 			currentField.minDist = distance
+		} else {
+			currentPath.distance = distance
 		}
 
 		if controlRoomDir != NONE {
@@ -293,18 +327,18 @@ func (r *runner) touchAlarm() {
 		}
 
 		dir := NONE
-		if distance >= r.alarmRounds {
+		if currentField.minDist >= r.alarmRounds {
 			// Stop searching - not worth it.
 			fmt.Fprintln(os.Stderr, "Putting artifical wall! Distance is too long.")
 			dir = currentField.getFewestMarkDirNotExceedingAlarmRound(previousDir, r.alarmRounds)
 		} else {
 			// Find a direction with the fewest marks. Excluding the previousDir if not NONE.
-			dir = currentField.getFewestMarkDir(previousDir)
+			dir = currentField.getFewestMarkDir(r, previousDir)
 		}
 
 		fmt.Fprintln(os.Stderr,
-			fmt.Sprintf("Dirs found: %v. Field was already processed? %v. \nL: %v Dir chosen: %v. Prev dir: %v. Curr path: %+v",
-				currentField.minDist, currentField.availableDirs, isAlreadyMarked, dir, previousDir, currentPath))
+			fmt.Sprintf("Dirs found: %v. Field was already processed? %v. \n FieldDist:%v Dir chosen: %v. Prev dir: %v. Curr path: %+v",
+				currentField.availableDirs, isAlreadyMarked, currentField.minDist, dir, previousDir, currentPath))
 
 		if currentField.isJunction {
 			// It's junction, so  we need to increase the mark and create a new path if it's nil.
@@ -329,7 +363,7 @@ func (r *runner) touchAlarm() {
 				currentField.availableDirs[dir] = newEdge()
 			}
 
-			currentField.availableDirs[dir].distance = distance
+			currentField.availableDirs[dir].distance = currentField.minDist
 			currentField.availableDirs[dir].localDistance = 0
 		} else {
 			if currentPath == nil {
@@ -474,8 +508,6 @@ func (r *runner) whatIsIn(p pos, dir Dir, dist int) *field {
 	return nil
 }
 
-// Author: witcher92
-// Inspired by Trémaux's algorithm.
 func main() {
 	// Rows: number of rows.
 	// Cols: number of columns.
