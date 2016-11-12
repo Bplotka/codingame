@@ -101,15 +101,17 @@ func (f *field) getFewestMarkDir(r *runner, previousDir Dir) Dir {
 		pathMinMark := 0
 		if path != nil {
 			// Erase the path marks if the adjacent field distance is NOT within 1 distance to us!
-			adjacentField := r.whatIsIn(r.kirkPos, dir, 1)
-			if adjacentField != nil {
-				if f.availableDirs[dir].marks != 0 && adjacentField.minDist != math.MaxInt32 && adjacentField.minDist - f.minDist > 1 {
-					fmt.Fprintln(os.Stderr,
-						fmt.Sprintf("Erasing path in dir %v, since found this path to be worse (adj dist: %d, my dist: %d)", dir, adjacentField.minDist, f.minDist))
-					f.availableDirs[dir].marks -=1
-					path.distance = f.minDist
-				}
-			}
+			//adjacentField := r.whatIsIn(r.kirkPos, dir, 1)
+			//if adjacentField != nil {
+			//	// Extension nr 5.
+			//	if f.availableDirs[dir].marks != 0 &&
+			//		adjacentField.minDist != math.MaxInt32 && adjacentField.minDist - f.minDist > 1 {
+			//		fmt.Fprintln(os.Stderr,
+			//			fmt.Sprintf("Erasing path in dir %v, since found this path to be worse (adj dist: %d, my dist: %d)", dir, adjacentField.minDist, f.minDist))
+			//		f.availableDirs[dir].marks -=1
+			//		path.distance = f.minDist
+			//	}
+			//}
 
 			pathMinMark = path.marks
 		}
@@ -140,11 +142,14 @@ func (f *field) getFewestMarkDirNotExceedingAlarmRound(previousDir Dir, alarmRou
 			continue
 		}
 		path := f.availableDirs[dir]
-		if path == nil || path.distance >= alarmRounds {
-			continue
+		pathMinMark := 0
+		if path != nil {
+			if path.distance >= alarmRounds {
+				continue
+			}
+			pathMinMark = path.marks
 		}
 
-		pathMinMark := path.marks
 		if pathMinMark < minMark {
 			minMark = pathMinMark
 			minDir = dir
@@ -248,8 +253,8 @@ type runner struct {
 //
 //	4. If the field's absolute distance from start point >= alarm round - it is not worth to go there, so find the lowest
 //  mark, excluding not visited paths and paths which exceeds alarm. I called artificial wall.
-//  5. 
-//
+//  5. If you spot that some adjacent field has significantly larger distance than yours, decrease mark (but no more than 0) and
+//  and reset distance.
 //
 
 func (r *runner) run() {
@@ -310,6 +315,10 @@ func (r *runner) touchAlarm() {
 			previousDir = currentPath.previousDir
 		}
 
+		if currentField.isStartPoint {
+			distance = 0
+		}
+
 		if distance < currentField.minDist {
 			currentField.minDist = distance
 		} else {
@@ -336,7 +345,7 @@ func (r *runner) touchAlarm() {
 
 		dir := NONE
 		if currentField.minDist >= r.alarmRounds {
-			// Stop searching - not worth it.
+			// Stop searching - not worth it. Extension nr 4.
 			fmt.Fprintln(os.Stderr, "Putting artifical wall! Distance is too long.")
 			dir = currentField.getFewestMarkDirNotExceedingAlarmRound(previousDir, r.alarmRounds)
 		} else {
