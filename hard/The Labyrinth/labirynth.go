@@ -98,16 +98,19 @@ func (f *field) getFewestMarkDir(r *runner, previousDir Dir) Dir {
 		}
 		path := f.availableDirs[dir]
 
-		// Check if it was already blocked artificially.
-		adjacentField := r.whatIsIn(r.kirkPos, dir, 1)
-		if adjacentField != nil {
-			if adjacentField.minDist != math.MaxInt32 && adjacentField.minDist >= r.alarmRounds {
-				continue
-			}
-		}
-
 		pathMinMark := 0
 		if path != nil {
+			// Erase the path marks if the adjacent field distance is NOT within 1 distance to us!
+			adjacentField := r.whatIsIn(r.kirkPos, dir, 1)
+			if adjacentField != nil {
+				if f.availableDirs[dir].marks != 0 && adjacentField.minDist != math.MaxInt32 && adjacentField.minDist - f.minDist > 1 {
+					fmt.Fprintln(os.Stderr,
+						fmt.Sprintf("Erasing path in dir %v, since found this path to be worse (adj dist: %d, my dist: %d)", dir, adjacentField.minDist, f.minDist))
+					f.availableDirs[dir].marks -=1
+					path.distance = f.minDist
+				}
+			}
+
 			pathMinMark = path.marks
 		}
 
@@ -115,6 +118,10 @@ func (f *field) getFewestMarkDir(r *runner, previousDir Dir) Dir {
 			minMark = pathMinMark
 			minDir = dir
 		}
+	}
+
+	if previousDir.Opposite() != NONE && minMark == 2 {
+		return previousDir.Opposite()
 	}
 
 	return minDir
@@ -227,7 +234,7 @@ type runner struct {
 //    x---path-(marks: X)--x
 //  field  -  field  -  field
 // (junction)		  (junction)
-// 	  |				  |
+// 	  |				  	  |
 //	field				field
 //
 //  1. Start with random direction (dir)
@@ -239,8 +246,9 @@ type runner struct {
 // Above algo works perfectly find -> at the ends it always finds the control room. But not always finds the shortest path
 // so extensions are needed:
 //
-//	4. If the field's absolute distance from start point >= alarm round it is not worth to go there so find the lowest
-//  mark, excluding no marks and paths with exceeding alarm.
+//	4. If the field's absolute distance from start point >= alarm round - it is not worth to go there, so find the lowest
+//  mark, excluding not visited paths and paths which exceeds alarm. I called artificial wall.
+//  5. 
 //
 //
 
@@ -338,7 +346,7 @@ func (r *runner) touchAlarm() {
 
 		fmt.Fprintln(os.Stderr,
 			fmt.Sprintf("Dirs found: %v. Field was already processed? %v. \n FieldDist:%v Dir chosen: %v. Prev dir: %v. Curr path: %+v",
-				currentField.availableDirs, isAlreadyMarked, currentField.minDist, dir, previousDir, currentPath))
+				r.printDirs(currentField), isAlreadyMarked, currentField.minDist, dir, previousDir, currentPath))
 
 		if currentField.isJunction {
 			// It's junction, so  we need to increase the mark and create a new path if it's nil.
@@ -393,6 +401,13 @@ func (r *runner) touchAlarm() {
 	}
 }
 
+func (r *runner) printDirs(currentField *field) string {
+	var dirs []string
+	for dir, path := range currentField.availableDirs {
+		dirs = append(dirs, fmt.Sprintf("%d: %v", dir, path))
+	}
+	return strings.Join(dirs, ",")
+}
 func (r *runner) returnToControlRoom() Dir{
 	previousDir := NONE
 	for {
