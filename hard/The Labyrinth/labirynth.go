@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"errors"
 )
 
 type Dir int
@@ -71,15 +72,20 @@ type field struct {
 	availableDirs      map[Dir]*edge
 	availableDirsOrder []Dir
 
-	isProccessed  bool
 	isJunction    bool
 	isStartPoint  bool
 	isControlRoom bool
 
-	distance int
-	controlDistance int
+	minDist int
 }
 
+func newField() *field {
+	return &field{
+		minDist: math.MaxInt32,
+	}
+}
+
+// For not visited path -> mark = 0.
 func (f *field) getFewestMarkDir(previousDir Dir) Dir {
 	if len(f.availableDirsOrder) == 1 {
 		return f.availableDirsOrder[0]
@@ -106,6 +112,7 @@ func (f *field) getFewestMarkDir(previousDir Dir) Dir {
 	return minDir
 }
 
+// For not visited path, we are assuming it
 func (f *field) getFewestMarkDirNotExceedingAlarmRound(previousDir Dir, alarmRounds int) Dir {
 	if len(f.availableDirsOrder) == 1 {
 		return f.availableDirsOrder[0]
@@ -180,7 +187,7 @@ func (f *field) getLowestDistanceControlDir(previousDir Dir) Dir {
 
 type edge struct {
 	marks       int
-	distance    int // In rounds from home.
+	distance int
 	localDistance int
 	controlRoomDistance int
 	previousDir Dir
@@ -189,6 +196,39 @@ type edge struct {
 func newEdge() *edge {
 	return &edge{
 		controlRoomDistance: math.MaxInt32,
+	}
+}
+
+func (e *edge) DistInField(currentField *field) int {
+	dist, ok := edge.abDistance[currentField]
+	if ok {
+		return dist
+	}
+
+	dist, err := e.DistInOppField(currentField)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "SHOULD NOT HAPPEN")
+	}
+
+	return dist + e.localDistance
+
+}
+
+// if not -> err.
+func (e *edge) DistInOppField(currentField *field) (int, error) {
+	// Find opposite distance.
+	for f, dist := range edge.abDistance {
+		if f == currentField {
+			continue
+		}
+		return dist, nil
+	}
+	return 0, errors.New("NotFound")
+}
+
+func (e *edge) SetEdgeEnd(currentField *field) {
+	if _, ok := e.abDistance[currentField]; !ok {
+		e.abDistance[currentField] = e.localDistance
 	}
 }
 
@@ -214,90 +254,80 @@ func (r *runner) run() {
 		var row string
 		fmt.Scan(&row)
 		for j, char := range strings.Split(row, "") {
-			if char == "C" {
-				r.controlRoomPos = pos{x: i, y: j}
-				r.maze[i][j] = &field{isControlRoom: true,controlDistance: math.MaxInt32}
-				continue
-			}
-
-			if char == "." {
-				r.maze[i][j] = &field{controlDistance: math.MaxInt32}
-				continue
-			}
-
-			if char == "T" {
-				r.maze[i][j] = &field{isStartPoint: true, controlDistance: math.MaxInt32}
-				continue
-			}
+			r.charToMazeField(i, j, char)
 		}
 	}
 	r.touchAlarm()
 }
 
+func (r* runner) charToMazeField(i, j int, char string) {
+	if char == "C" {
+		r.controlRoomPos = pos{x: i, y: j}
+		r.maze[i][j] = newField()
+		r.maze[i][j].isControlRoom = true
+		return
+	}
+
+	if char == "." {
+		r.maze[i][j] = newField()
+		r.maze[i][j].isControlRoom = true
+		return
+	}
+
+	if char == "T" {
+		r.maze[i][j] = newField()
+		r.maze[i][j].isStartPoint = true
+	}
+}
+
 func (r *runner) touchAlarm() {
 	var currentPath *edge
 	for {
-		//nextMove := RIGHT
-		// if r.controlRoomPos != nil {
-		//    xDiff := r.controlRoomPos.x - r.kirkPos.x
-		//    yDiff := r.controlRoomPos.y - r.kirkPos.y
-		//
-		//    if xDiff > yDiff {
-		//       if xDiff > 0 {
-		//          nextMove = DOWN
-		//       } else {
-		//          nextMove = UP
-		//       }
-		//    } else {
-		//       if yDiff > 0 {
-		//          nextMove = RIGHT
-		//       } else {
-		//          nextMove = LEFT
-		//       }
-		//    }
-		//}
 		currentField := r.maze[r.kirkPos.x][r.kirkPos.y]
 
+		// Process neighbours if needed. Also grab if we are nearby control ROOM!
 		isAlreadyMarked := true
-		if !currentField.isProccessed {
+		controlRoomDir := NONE
+		if len(currentField.availableDirs) == 0 {
 			isAlreadyMarked = false
-			controlRoomDir := r.processField(currentField)
+			controlRoomDir = r.processAvailablePaths(currentField)
+		}
 
-			if controlRoomDir != NONE {
-				// We could go there and set alarm, but let's check if we have enough way home.
-				if currentPath == nil || currentPath.distance+1 <= r.alarmRounds {
-					// We are ok! Let's set alarm and let's go back.
-					if currentPath == nil {
-						currentPath = newEdge()
-					}
-					currentPath.distance++
-					currentPath.localDistance++
-					currentField.availableDirs[currentPath.previousDir.Opposite()] = currentPath
-					r.setAlarmAndGoBack(controlRoomDir)
-				} else {
-					fmt.Fprintln(os.Stderr,
-						fmt.Sprintf("Control room is nearby, but we have too long distance %d to go. Alarm: %d",
-							currentPath.distance, r.alarmRounds))
-					currentPath.controlRoomDistance =  1 - (currentPath.localDistance + 1)
-				}
+		// Fill previousDir and inc local distance when currentPath is present.
+		previousDir := NONE
+		distance := 0
+		if currentPath != nil {
+			currentPath.localDistance++
+			previousDir = currentPath.previousDir
+
+			if currentField.isJunction {
+				currentPath.SetEdgeEnd(currentField)
 			}
 		}
 
-		// Fill previousDir and inc distance when currentPath is present.
-		previousDir := NONE
-		if currentPath != nil {
-			currentPath.distance++
-			currentPath.localDistance++
-			previousDir = currentPath.previousDir
+		if controlRoomDir != NONE {
+			// We could go there and set alarm, but let's check if we have enough way home.
+			// NOTE: It won't happen in newest algo.
+			if currentPath == nil || currentPath.DistInField(currentField) <= r.alarmRounds {
+				// We are ok! Let's set alarm and let's go back.
+				if currentPath == nil {
+					currentPath = newEdge()
+				}
+				currentField.availableDirs[currentPath.previousDir.Opposite()] = currentPath
+				r.setAlarmAndGoBack(controlRoomDir)
+			} else {
+				fmt.Fprintln(os.Stderr,
+					fmt.Sprintf("Control room is nearby, but we have too long distance %d to go. Alarm: %d",
+						currentPath.distance, r.alarmRounds))
+				currentPath.controlRoomDistance =  1 - (currentPath.localDistance + 1)
+			}
 		}
 
 		dir := NONE
-		if currentPath != nil && currentPath.distance >= r.alarmRounds {
+		if currentPath != nil && currentPath.DistInField(currentField) >= r.alarmRounds {
 			// Stop searching - not worth it.
 			fmt.Fprintln(os.Stderr, "Putting artifical wall! Distance is too long.")
 			dir = currentField.getFewestMarkDirNotExceedingAlarmRound(previousDir, r.alarmRounds)
-			currentPath.marks = 2
-			currentPath.distance-=2
 		} else {
 			// Find a direction with the fewest marks. Excluding the previousDir if not NONE.
 			dir = currentField.getFewestMarkDir(previousDir)
@@ -308,7 +338,7 @@ func (r *runner) touchAlarm() {
 				currentField.availableDirs, isAlreadyMarked, dir, previousDir, currentPath))
 
 		if currentField.isJunction {
-			// It's junction we need to increase the mark and create a new path if it's nil.
+			// It's junction, so  we need to increase the mark and create a new path if it's nil.
 			if currentPath != nil {
 				if isAlreadyMarked && currentPath.marks == 1 &&
 					currentField.availableDirs[currentPath.previousDir.Opposite()] == nil {
@@ -441,7 +471,7 @@ func (r *runner) setAlarmAndGoBack(controllerRoomDir Dir) {
 	}
 }
 
-func (r *runner) processField(currentField *field) (controlRoomDir Dir) {
+func (r *runner) processAvailablePaths(currentField *field) (controlRoomDir Dir) {
 	// Let's check what is around!
 	dir := UP
 	controlRoomDir = NONE
@@ -467,7 +497,6 @@ func (r *runner) processField(currentField *field) (controlRoomDir Dir) {
 	if len(currentField.availableDirs) > 2 {
 		currentField.isJunction = true
 	}
-	currentField.isProccessed = true
 
 	return controlRoomDir
 }
@@ -484,16 +513,7 @@ func (r *runner) updateMazeFromInput() {
 				continue
 			}
 
-			if char == "C" {
-				r.controlRoomPos = pos{x: i, y: j}
-				r.maze[i][j] = &field{isControlRoom: true, controlDistance: math.MaxInt32}
-				continue
-			}
-
-			if char == "." {
-				r.maze[i][j] = &field{controlDistance: math.MaxInt32}
-				continue
-			}
+			r.charToMazeField(i, j, char)
 		}
 	}
 }
@@ -526,3 +546,23 @@ func main() {
 	fmt.Scan(&r.rows, &r.cols, &r.alarmRounds)
 	r.run()
 }
+
+//nextMove := RIGHT
+// if r.controlRoomPos != nil {
+//    xDiff := r.controlRoomPos.x - r.kirkPos.x
+//    yDiff := r.controlRoomPos.y - r.kirkPos.y
+//
+//    if xDiff > yDiff {
+//       if xDiff > 0 {
+//          nextMove = DOWN
+//       } else {
+//          nextMove = UP
+//       }
+//    } else {
+//       if yDiff > 0 {
+//          nextMove = RIGHT
+//       } else {
+//          nextMove = LEFT
+//       }
+//    }
+//}
