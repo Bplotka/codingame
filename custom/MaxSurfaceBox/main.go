@@ -10,7 +10,7 @@ import (
 func main() {
 	var bricks int
 	fmt.Scan(&bricks)
-	fmt.Printf("%d\n", cuboidSurface(6, 97, 1697))
+	//fmt.Printf("%d\n", cuboidSurface(6, 97, 1697))
 	fmt.Printf("%d %d\n",
 		cuboidSurface(lmin(buildNormalizedCuboid(bricks))),
 		cuboidSurface(lmax(buildTallCuboid(bricks))),
@@ -34,15 +34,15 @@ func buildNormalizedCuboid(bricksNum int) (int, int, int) {
 	smallestDivisible := 2
 	number := bricksNum
 	for number > 1 {
-		smallestDivisible = findSmallestDivisible(number, smallestDivisible)
+		smallestDivisible = findSmallestDivisible(number, smallestDivisible-1)
 		components = append(components, smallestDivisible)
 
 		number = number / smallestDivisible
 	}
-
+	fmt.Println(components)
 	sort.Sort(sort.Reverse(sort.IntSlice(components)))
 
-	cuboid := []int{components[0],1,1}
+	cuboid := []int{components[0], 1, 1}
 	for i, comp := range components[1:2] {
 		cuboid[i+1] = comp
 	}
@@ -140,7 +140,7 @@ func lmax(x, y, z int) (int, int, int) {
 }
 
 func cuboidSurface(x, y, z int) int {
-	return (2 * x * y) + (2 * y * z) + (2 * x * z)
+	return 2 * ((x * y) + (y * z) + (x * z))
 }
 
 func cuboidSpace(cuboid []int) int {
