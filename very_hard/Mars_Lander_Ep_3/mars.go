@@ -6,17 +6,22 @@ import (
 	"os"
 )
 
-const MarsGravity = -3.711
+const (
+	MarsGravity = -3.711
+	MaxHSpeed = 20
+	MaxVSpeed = 40
+)
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			d("ERROR: %v", r)
+		}
+	}()
 	(&lander{}).Land()
 }
 
 func d(format string, a ...interface{}) {
-	fmt.Fprintln(os.Stderr, fmt.Sprintf(format, a...))
-}
-
-func de(format string, a ...interface{}) {
 	fmt.Fprintln(os.Stderr, fmt.Sprintf(format, a...))
 }
 
@@ -34,26 +39,41 @@ type lander struct {
 // Land using PID controller approach. In every iteration check the estimated landing and adjust.
 func (l *lander) Land() {
 	l.discoverSurfaceAndLandingSite()
-	l.gatherInput()
 	d("Landing center: %s, tolerance: %d", l.landingCenterPoint.print(), l.landingSiteTolerance)
 
 	for {
-		// MAIN LOOP.
+		// --- MAIN LOOP ---
+		l.gatherInput()
+
 		where, isLandingArea, when, eVSpeed, eHSpeed := l.estimateSurfaceReachable()
 		d("Estimated landing: %s | ok? %v | epochs: %d, eV: %f, eH %f",
 			where.print(), isLandingArea, when, eVSpeed, eHSpeed)
 
+		// TODO: Calculate obstacles, use bezier.
+
 		angleToAdjust, distance := l.angleAndDistanceToTarget(where)
 		d("Angle to adjust: %f | distance %f", angleToAdjust, distance)
 
-		// Calculate what throttle and rotation to add.
+		// Adjusting phase.
 		throttle := 0
 		if angleToAdjust > 5 {
 			throttle = 4
 		}
 
+		// We are free-falling to Landing Area, cool - but we need to brake ):
+		if isLandingArea &&
+			(math.Abs(float64(l.hSpeed)) >= MaxHSpeed || math.Abs(float64(l.vSpeed)) >= MaxVSpeed) {
+
+			brakingVec := newPoint(-l.hSpeed, -l.vSpeed)
+			angleToAdjust = where.Sub(l.pos).Angle(brakingVec)
+
+			throttle = 4
+			if angleToAdjust > 15 {
+				throttle = 0
+			}
+		}
+
 		l.engineSettings(int(angleToAdjust), throttle)
-		l.gatherInput()
 	}
 }
 
@@ -125,13 +145,13 @@ func (l *lander) estimateSurfaceReachable() (where point, isLandingArea bool, wh
 	tmpVSpeed := float64(l.vSpeed)
 	tmpHSpeed := float64(l.hSpeed)
 
-	safeZone := collisionCircle{center: l.pos}
+	pos := l.pos
 	for {
 		// Movement.
-		safeZone.center.x += tmpHSpeed
-		safeZone.center.y += tmpVSpeed
+		pos.x += tmpHSpeed
+		pos.y += tmpVSpeed
 
-		safeZone.r = Max(tmpHSpeed, tmpVSpeed) + 2
+		safeZone := newCollCircle(pos, tmpVSpeed, tmpHSpeed)
 		if collisionPt, surfaceEndID, is := safeZone.isCollidingWithSurface(l.surface); is {
 			return collisionPt, (surfaceEndID == l.landingSurfaceEndID), epoch, tmpVSpeed, tmpHSpeed
 		}
@@ -157,6 +177,9 @@ func newPoint(x, y int) point {
 // Dot returns the standard dot product of v and ov.
 func (p point) Dot(ov point) float64 { return p.x*ov.x + p.y*ov.y }
 
+// Norm2 returns the square of the norm.
+func (p point) Norm2() float64 { return p.Dot(p) }
+
 // Norm returns the vector's norm.
 func (p point) Norm() float64 { return math.Sqrt(p.Dot(p)) }
 
@@ -180,23 +203,8 @@ func (p point) Angle(ov point) float64 {
 	return math.Atan2(s.y, s.x) * (180 / math.Pi)
 }
 
-//func (p point) didCrossedSurface(surface []point) bool {
-//	for i, surfacePt := range surface {
-//		if p.x > surfacePt.x {
-//			continue
-//		}
-//
-//		a := surfacePt.y - surface[i-1].y
-//		b := surfacePt.x - surface[i-1].x
-//		a2 := p.x - surface[i-1].x
-//		x := (b * a2) / a
-//		if (p.y - surface[i-1].y) <= x {
-//			return true
-//		}
-//	}
-//
-//	return false
-//}
+// Distance returns the Euclidean distance between v and ov.
+func (p point) Distance(ov point) float64 { return p.Sub(ov).Norm() }
 
 func (p point) print() string {
 	return fmt.Sprintf("[%f, %f]", p.x, p.y)
@@ -207,65 +215,50 @@ type collisionCircle struct {
 	r      float64
 }
 
+// r based on current speed.
+func newCollCircle(pos point, vSpeed, hSpeed float64) collisionCircle {
+	return collisionCircle{
+		center: pos,
+		r: Max(math.Abs(vSpeed), math.Abs(hSpeed)),
+	}
+}
+
 func (co collisionCircle) isCollidingWithSurface(surface []point) (point, int, bool) {
 	for i := range surface[1:] {
 		start := surface[i]
-		end := surface[i+1]
+		end := surface[i + 1]
 
-		if end.x < (co.center.x-co.r) && start.x < (co.center.x-co.r) {
+		if end.x < (co.center.x - co.r) && start.x < (co.center.x - co.r) {
 			// To far to be collision.
 			continue
 		}
 
-		// Fallback to proper intersection.
-		d := end.Sub(start)
-		f := co.center.Sub(start)
+		if end.x > (co.center.x + co.r) && start.x > (co.center.x + co.r) {
+			// To far to be collision.
+			break
+		}
 
-		a := d.Dot(d)
-		b := 2 * f.Dot(d)
-		c := f.Dot(f) - co.r*co.r
+		// Fallback to proper intersection by finding the closest point and checking if it collide.
+		startToEndVec := end.Sub(start)
+		startToCenterVec := co.center.Sub(start)
+		distanceFromStart := startToCenterVec.Dot(startToEndVec) / startToEndVec.Norm2()
+		closestPt := point{
+			x: start.x + startToEndVec.x * distanceFromStart,
+			y: start.y + startToEndVec.y * distanceFromStart,
+		}
 
-		discriminant := b*b - 4*a*c
-
-		if discriminant < 0 {
-			// No intersection.
+		dist := co.center.Distance(closestPt)
+		if dist < 100 {
+			d("c: %v, closest: %v dist: %f", co.center.print(), closestPt.print(), dist)
+		}
+		if dist > co.r {
 			continue
 		}
 
-		// There is a solution to the equation.
-		discriminant = math.Sqrt(discriminant)
-		t1 := (-b - discriminant) / (2 * a)
-		t2 := (-b + discriminant) / (2 * a)
+		return closestPt, i+1, true
 
-		// 3x HIT cases:
-		//          -o->             --|-->  |            |  --|->
-		// Impale(t1 hit,t2 hit), Poke(t1 hit,t2>1), ExitWound(t1<0, t2 hit),
-
-		// 3x MISS cases:
-		//       ->  o                     o ->              | -> |
-		// FallShort (t1>1,t2>1), Past (t1<0,t2<0), CompletelyInside(t1<0, t2>1)
-		de("%f x %f", t1, t2)
-		if t1 >= 0 && t1 <= 1 {
-			// t1 is the intersection, and it's closer than t2 (since t1 uses -b - discriminant)
-			// Impale, Poke
-			return calcIntersectPt(t1, start, d), i+1, true
-		}
-
-		// here t1 didn't intersect so we are either started inside the sphere or completely past it
-		if t2 >= 0 && t2 <= 1 {
-			// ExitWound
-			return calcIntersectPt(t2, start, d), i+1, true
-		}
-		// no intn: FallShort, Past, CompletelyInside
 	}
 	return point{}, 0, false
-}
-
-func calcIntersectPt(t float64, start, d point) point {
-	return point{
-		x: start.x + t*d.x,
-		y: start.y + t*d.y,
-	}
 }
 
 // Bezier evaluation.
