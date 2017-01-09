@@ -207,11 +207,11 @@ func (f *field) getLowestDistanceControlDir(previousDir Dir) Dir {
 }
 
 type edge struct {
-	marks       int
-	distance int
-	localDistance int
+	marks               int
+	distance            int
+	localDistance       int
 	controlRoomDistance int
-	previousDir Dir
+	previousDir         Dir
 }
 
 func newEdge() *edge {
@@ -273,7 +273,7 @@ func (r *runner) run() {
 	r.touchAlarm()
 }
 
-func (r* runner) charToMazeField(i, j int, char string) {
+func (r *runner) charToMazeField(i, j int, char string) {
 	if char == "C" {
 		r.controlRoomPos = pos{x: i, y: j}
 		r.maze[i][j] = newField()
@@ -339,7 +339,7 @@ func (r *runner) touchAlarm() {
 				fmt.Fprintln(os.Stderr,
 					fmt.Sprintf("Control room is nearby, but we have too long distance %d to go. Alarm: %d",
 						currentPath.distance, r.alarmRounds))
-				currentPath.controlRoomDistance =  1 - (currentPath.localDistance + 1)
+				currentPath.controlRoomDistance = 1 - (currentPath.localDistance + 1)
 			}
 		}
 
@@ -417,7 +417,7 @@ func (r *runner) printDirs(currentField *field) string {
 	}
 	return strings.Join(dirs, ",")
 }
-func (r *runner) returnToControlRoom() Dir{
+func (r *runner) returnToControlRoom() Dir {
 	previousDir := NONE
 	for {
 		currentField := r.maze[r.kirkPos.x][r.kirkPos.y]
@@ -447,7 +447,7 @@ func (r *runner) setAlarmAndGoBack(controllerRoomDir Dir) {
 
 	currentField := r.maze[r.kirkPos.x][r.kirkPos.y]
 
-	if len(currentField.availableDirs) ==0 {
+	if len(currentField.availableDirs) == 0 {
 		_ = r.processAvailablePaths(currentField)
 	}
 
