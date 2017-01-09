@@ -41,8 +41,8 @@ func (l *lander) Land() {
 	l.discoverSurfaceAndLandingSite()
 	d("Landing center: %s, tolerance: %d", l.landingCenterPoint.print(), l.landingSiteTolerance)
 
+	// Adjusting loop.
 	for {
-		// --- MAIN LOOP ---
 		l.gatherInput()
 
 		where, isLandingArea, when, eVSpeed, eHSpeed := l.estimateSurfaceReachable()
@@ -55,25 +55,52 @@ func (l *lander) Land() {
 		d("Angle to adjust: %f | distance %f", angleToAdjust, distance)
 
 		// Adjusting phase.
-		throttle := 0
+		throttle := 4
 		if angleToAdjust > 5 {
 			throttle = 4
 		}
 
 		// We are free-falling to Landing Area, cool - but we need to brake ):
-		if isLandingArea &&
-			(math.Abs(float64(l.hSpeed)) >= MaxHSpeed || math.Abs(float64(l.vSpeed)) >= MaxVSpeed) {
-
+		if isLandingArea && when < 20 && (math.Abs(float64(eHSpeed)) >= MaxHSpeed || math.Abs(float64(eVSpeed)) >= MaxVSpeed) {
 			brakingVec := newPoint(-l.hSpeed, -l.vSpeed)
-			angleToAdjust = where.Sub(l.pos).Angle(brakingVec)
+			d("braking: %s", brakingVec.print())
+			angleToAdjust = l.pos.Sub(where).Angle(brakingVec)
+
+			throttle = 4
+			if angleToAdjust > 15 {
+				throttle = 4
+			}
+		}
+
+		l.engineSettings(int(angleToAdjust), throttle)
+	}
+}
+
+func (l *lander) landingPhase(landingTarget point) {
+	for {
+		throttle := 0
+		angleToAdjust := float64(0)
+		// We are free-falling to Landing Area, cool - but we need to brake ):
+		if math.Abs(float64(l.hSpeed)) >= MaxHSpeed || math.Abs(float64(l.vSpeed)) >= MaxVSpeed {
+			brakingVec := newPoint(-l.hSpeed, -l.vSpeed)
+			d("braking: %s", brakingVec.print())
+			angleToAdjust = l.pos.Sub(landingTarget).Angle(brakingVec)
 
 			throttle = 4
 			if angleToAdjust > 15 {
 				throttle = 0
 			}
+		} else {
+			angleToAdjust, distance := l.angleAndDistanceToTarget(landingTarget)
+			d("Angle to adjust: %f | distance %f", angleToAdjust, distance)
+
+			if angleToAdjust > 5 {
+				throttle = 4
+			}
 		}
 
 		l.engineSettings(int(angleToAdjust), throttle)
+		l.gatherInput()
 	}
 }
 
@@ -85,7 +112,13 @@ func (l *lander) rotationAndPowerToAdjustAngle(angleToAdjust float64) {
 func (l *lander) angleAndDistanceToTarget(currentTarget point) (angle float64, distance float64) {
 	desiredDir := l.landingCenterPoint.Sub(l.pos)
 	headingDir := currentTarget.Sub(l.pos)
-	angle = desiredDir.Angle(headingDir)
+	if l.landingCenterPoint.x < currentTarget.x {
+		angle = desiredDir.Angle(headingDir)
+	} else {
+		d("TOO FAR")
+		angle = headingDir.Angle(desiredDir)
+	}
+
 	return angle, l.landingCenterPoint.Sub(l.pos).Norm()
 }
 
@@ -129,6 +162,13 @@ func (l *lander) gatherInput() {
 func (l *lander) engineSettings(rotationSetting, throttleSetting int) {
 	// rotate power. rotate is the desired rotation angle. [ MINUS = RIGHT ]
 	// power is the desired thrust power.
+
+	// validate rotation first.
+	if rotationSetting > 90 {
+		rotationSetting = 90
+	} else if rotationSetting < -90 {
+		rotationSetting = -90
+	}
 	fmt.Printf("%d %d\n", rotationSetting, throttleSetting)
 }
 
@@ -235,7 +275,7 @@ func (co collisionCircle) isCollidingWithSurface(surface []point) (point, int, b
 
 		if end.x > (co.center.x + co.r) && start.x > (co.center.x + co.r) {
 			// To far to be collision.
-			break
+			continue
 		}
 
 		// Fallback to proper intersection by finding the closest point and checking if it collide.
@@ -248,9 +288,6 @@ func (co collisionCircle) isCollidingWithSurface(surface []point) (point, int, b
 		}
 
 		dist := co.center.Distance(closestPt)
-		if dist < 100 {
-			d("c: %v, closest: %v dist: %f", co.center.print(), closestPt.print(), dist)
-		}
 		if dist > co.r {
 			continue
 		}
